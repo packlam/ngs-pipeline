@@ -24,8 +24,8 @@ SAMTOOLS = '/usr/local/bfx/samtools/samtools-1.5/bin/samtools'
 VARSCAN = '/usr/local/bfx/varscan/varscan-2.4.3/VarScan.v2.4.3.jar'
 
 # python scripts
-FILTERVCF = '/usr/local/bfx/python/filtervcf.py'
-GENERATE_RESULTS = '/usr/local/bfx/python/generate_results.py'
+FILTERVCF = '/usr/local/bfx/python/ngs-pipeline/filtervcf.py'
+GENERATE_RESULTS = '/usr/local/bfx/python/ngs-pipeline/generate_results.py'
 
 # reference files
 REF_GENOME = '/HMDS_BIOINFORMATICS/references/hg19/hg19.fa'
@@ -65,7 +65,7 @@ def get_args():
         help = 'Type of panel',
         metavar = '<panel>',
         dest = 'panel',
-        choices=['myeloid', 'lymphoid_CLL_MZL'],
+        choices = ['myeloid', 'lymphoid_CLL_MZL'],
         required = True
     )
         
@@ -251,6 +251,7 @@ class Pipeline(object):
         self.sample_list = df['Sample_ID'].str.replace('/', '-').tolist()
 
         logger.info('Samples to be processed:')
+        
         for s in self.sample_list:
             logger.info(s)
 
@@ -315,36 +316,40 @@ class Pipeline(object):
             
             cmd = ' '.join(
                 [
-                    BWA, 'mem', '-t', '8',
+                    BWA, 'mem',
+                    '-t', '8',
                     REF_GENOME,
                     fastq_R1, fastq_R2,
                     '>', os.path.join(self.bam_dir, sam_file)
                 ]
             )
             
-            ##########################################################################################
-            # note that Shell=True for the following command.
-            # this is due to the use of '>' redirection at the command line.
+            #####################################################################
             #
-            # note also that when using Shell=True, subprocess.Popen expects a string and not a list.
+            # Note that Shell = True for the following command. This is due to
+            # the use of '>' redirection at the command line.
+            #
+            # Note also that when using Shell=True, subprocess.Popen expects
+            # a string and not a list.
             #
             # from the docs:
             #
-            # "The shell argument (which defaults to False) specifies whether to use the shell as the
-            # program to execute. If shell is True, it is recommended to pass args as a string rather
-            # than as a sequence."
+            # "The shell argument (which defaults to False) specifies whether
+            # to use the shell as the program to execute. If shell is True, it
+            # is recommended to pass args as a string rather than as a sequence."
             #
             # https://docs.python.org/2/library/subprocess.html#popen-constructor
-            ##########################################################################################
+            #
+            #####################################################################
             
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                shell=True
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                shell = True
             )
                     
-            proc_output, _ =  proc.communicate()
+            proc_output, _ = proc.communicate()
             logger.info(proc_output)
             logger.info('Output SAM file: %s' % sam_file)
 
@@ -440,6 +445,7 @@ class Pipeline(object):
             ]
 
             call_subprocess(cmd)
+            
             logger.info('AlignmentSummaryMetrics output saved to %s' % align_sum_file)
 
             # run CollectHsMetrics
@@ -459,6 +465,7 @@ class Pipeline(object):
             ]
             
             call_subprocess(cmd)
+            
             logger.info('HsMetrics output saved to %s' % targets_sum_file)
 
         return None
@@ -502,12 +509,12 @@ class Pipeline(object):
             # (so don't use the call_subprocess function)
             proc = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                shell=True
+                stdout = subprocess.PIPE,
+                stderr = subprocess.STDOUT,
+                shell = True
             )
                     
-            proc_output, _ =  proc.communicate()
+            proc_output, _ = proc.communicate()
             logger.info(proc_output)
             logger.info('VCF file saved to %s' % vcf_file)
             
@@ -562,6 +569,7 @@ class Pipeline(object):
                 
                 # run ABRA
                 logger.info('Running ABRA on %s' % sample)
+                
                 cmd = [
                     'java', '-Xmx8g', '-jar', ABRA,
                     '--in', os.path.join(self.run_dir, 'bam', bam_abra_in),
@@ -577,7 +585,9 @@ class Pipeline(object):
                 
                 # run samtools sort
                 logger.info('Sorting %s' % bam_abra_out)
+                
                 realigned_sorted_bam = bam_abra_out.replace('.bam', '_sorted.bam')
+                
                 cmd = [
                     SAMTOOLS, 'sort',
                     '-@', '8',
@@ -588,12 +598,16 @@ class Pipeline(object):
 
                 # run samtools index
                 logger.info('Indexing %s' % realigned_sorted_bam)
+                
                 cmd = [SAMTOOLS, 'index', realigned_sorted_bam]
+                
                 call_subprocess(cmd)
 
                 # run samtools mpileup on the sorted bam file
                 logger.info('Creating pileup file from %s' % realigned_sorted_bam)
+                
                 realigned_pileup = sample + '_realigned.pileup'
+                
                 cmd = [
                     SAMTOOLS, 'mpileup', '-B',
                     '-f', REF_GENOME,
@@ -622,13 +636,12 @@ class Pipeline(object):
                     ]
                 )
 
-                # as with BWA, Varscan has to be run with Shell=True
-                # (so don't use the call_subprocess function)
+                # VarScan must be run with Shell=True, so don't use call_subprocess
                 proc = subprocess.Popen(
                     cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    shell=True
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.STDOUT,
+                    shell = True
                 )
 
                 proc_output, _ =  proc.communicate()
@@ -721,7 +734,7 @@ class Pipeline(object):
             
             vcf_out = os.path.join(self.vcf_dir, 'filtered', f)
             
-            cmd =[
+            cmd = [
                 'python', FILTERVCF,
                 '--in', f,
                 '--out', vcf_out,
@@ -817,6 +830,7 @@ if __name__ == "__main__":
     logger.setLevel(logging.INFO)
 
     logfile = os.path.join(ANALYSIS_DIR, 'pipeline_log', args.expt_id + '.log')
+    
     fileHandler = logging.FileHandler(logfile, mode='w')
     fileHandler.setFormatter(logFormatter)
     logger.addHandler(fileHandler)
