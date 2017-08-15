@@ -434,7 +434,7 @@ class Pipeline(object):
             # run CollectAlignmentSummaryMetrics
             logger.info('Running CollectAlignmentSummaryMetrics for %s (%d of %d)' % (f, c+1, l))
 
-            align_sum_file = f.replace('_realigned_sorted.bam', '_alignSummary.txt')
+            align_sum_file = f.replace('_sorted.bam', '_alignSummary.txt')
             align_sum_path = os.path.join(mapping_reports_dir, align_sum_file)
 
             cmd = [
@@ -451,7 +451,7 @@ class Pipeline(object):
             # run CollectHsMetrics
             logger.info('Running CollectHsMetrics for %s' % f)
 
-            targets_sum_file = f.replace('_realigned_sorted.bam', '_targetsSummary.txt')
+            targets_sum_file = f.replace('_sorted.bam', '_targetsSummary.txt')
             targets_sum_path = os.path.join(mapping_reports_dir, targets_sum_file)
 
             cmd = [
