@@ -454,22 +454,26 @@ class Pipeline(object):
             # run CollectHsMetrics
             logger.info('Running CollectHsMetrics for %s' % f)
 
-            targets_sum_file = f.replace('_sorted.bam', '_targetsSummary.txt')
-            targets_sum_path = os.path.join(mapping_reports_dir, targets_sum_file)
+            target_sum_file = f.replace('_sorted.bam', '_targetSummary.txt')
+            target_sum_path = os.path.join(mapping_reports_dir, target_sum_file)
+            
+            target_cov_file = f.replace('_sorted.bam', '_targetCoverage.txt')
+            target_cov_path = os.path.join(mapping_reports_dir, target_cov_file)
 
             cmd = [
                 'java', '-Xmx8g', '-jar', PICARD,
                 'CollectHsMetrics',
-                'I=', f,
-                'O=', targets_sum_path,
                 'R=', REF_GENOME,
+                'I=', f,
+                'O=', target_sum_path,
                 'BAIT_INTERVALS=', self.targets_file,
-                'TARGET_INTERVALS=', self.targets_file
+                'TARGET_INTERVALS=', self.targets_file,
+                'PER_TARGET_COVERAGE=', target_cov_path
             ]
             
             call_subprocess(cmd)
             
-            logger.info('HsMetrics output saved to %s' % targets_sum_file)
+            logger.info('HsMetrics output saved to %s' % target_sum_file)
 
         return None
     
