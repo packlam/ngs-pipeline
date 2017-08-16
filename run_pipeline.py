@@ -249,6 +249,9 @@ class Pipeline(object):
         
         # replace '/' with '-' in Sample_ID column and send to list
         self.sample_list = df['Sample_ID'].str.replace('/', '-').tolist()
+        
+        # remove any spaces from sample IDs
+        self.sample_list = [i.replace(' ', '') for i in self.sample_list]
 
         logger.info('Samples to be processed:')
         
