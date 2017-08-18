@@ -2,7 +2,8 @@ import argparse
 import getpass
 import logging
 import os
-import shutil # for file copying
+import shutil
+import socket
 import subprocess
 import sys
 from time import strftime
@@ -150,8 +151,9 @@ class Pipeline(object):
         
         start = strftime("%Y-%m-%d %H:%M:%S")
         user = getpass.getuser()
+        hostname = socket.gethostname()
         
-        logger.info('Run started at %s by %s' % (start, user))
+        logger.info('Run started at %s by %s on %s' % (start, user, hostname))
         
         self.check_files()
         self.setup()
