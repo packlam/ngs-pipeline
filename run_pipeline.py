@@ -25,7 +25,7 @@ SAMTOOLS = '/usr/local/bfx/samtools/samtools-1.5/bin/samtools'
 VARSCAN = '/usr/local/bfx/varscan/varscan-2.4.3/VarScan.v2.4.3.jar'
 
 # python scripts
-GENERATE_RESULTS = '/usr/local/bfx/python/ngs-pipeline/generate_results_dev.py'
+GENERATE_RESULTS = '/usr/local/bfx/python/ngs-pipeline/generate_results.py'
 COVERAGEPY = '/usr/local/bfx/python/ngs-pipeline/coverage.py'
 
 # reference files
