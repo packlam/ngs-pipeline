@@ -2,12 +2,12 @@ import argparse
 import getpass
 import logging
 import os
+import pandas as pd
 import shutil
 import socket
 import subprocess
 import sys
 from time import strftime
-import pandas as pd
 
 
 # directories
@@ -25,8 +25,8 @@ SAMTOOLS = '/usr/local/bfx/samtools/samtools-1.5/bin/samtools'
 VARSCAN = '/usr/local/bfx/varscan/varscan-2.4.3/VarScan.v2.4.3.jar'
 
 # python scripts
-FILTERVCF = '/usr/local/bfx/python/ngs-pipeline/filtervcf.py'
-GENERATE_RESULTS = '/usr/local/bfx/python/ngs-pipeline/generate_results.py'
+GENERATE_RESULTS = '/usr/local/bfx/python/ngs-pipeline/generate_results_dev.py'
+COVERAGEPY = '/usr/local/bfx/python/ngs-pipeline/coverage.py'
 
 # reference files
 REF_GENOME = '/HMDS_BIOINFORMATICS/references/hg19/hg19.fa'
@@ -76,6 +76,10 @@ def get_args():
 
 
 def call_subprocess(cmd):
+    
+    '''
+    Accessory function for running subprocess
+    '''
     
     p = subprocess.Popen(
         cmd,
@@ -133,6 +137,7 @@ class Pipeline(object):
         self.alamut_dir = os.path.join(self.run_dir, 'alamut')
         self.bam_dir = os.path.join(self.run_dir, 'bam')
         self.coverage_dir = os.path.join(self.run_dir, 'coverage')
+        self.pileup_dir = os.path.join(self.coverage_dir, 'pileup')
         self.qc_dir = os.path.join(self.run_dir, 'QC')
         self.results_dir = os.path.join(self.run_dir, 'results')
         self.vcf_dir = os.path.join(self.run_dir, 'vcf')
@@ -141,6 +146,7 @@ class Pipeline(object):
             self.alamut_dir,
             self.bam_dir,
             self.coverage_dir,
+            self.pileup_dir,
             self.qc_dir,
             self.results_dir,
             self.vcf_dir
@@ -163,12 +169,13 @@ class Pipeline(object):
         self.run_picard()
         self.run_varscan()
         
+        # use ABRA to check for ASXL1 23bp deletion if it's the myeloid panel
         if self.panel == 'myeloid':
             self.asxl1_check()
         
-        self.run_filtervcf()
         self.run_alamut()
         self.generate_results()
+        self.generate_coverage_files()
         
         end = strftime("%Y-%m-%d %H:%M:%S")
         
@@ -389,7 +396,7 @@ class Pipeline(object):
             bam_file = f.replace('.sam', '.bam')
             sorted_bam_file = f.replace('.sam', '_sorted.bam')
             pileup_file = f.replace('.sam', '.pileup')
-            pileup_path = os.path.join(self.coverage_dir, pileup_file)
+            pileup_path = os.path.join(self.pileup_dir, pileup_file)
 
             # run samtools view
             logger.info('Converting %s to %s' % (f, bam_file))
@@ -486,7 +493,7 @@ class Pipeline(object):
         
         logger.info('>>>VarScan2>>>')
 
-        os.chdir(self.coverage_dir)
+        os.chdir(self.pileup_dir)
 
         self.vcf_list = []
 
@@ -726,34 +733,6 @@ class Pipeline(object):
                     shutil.copyfile(new_vcf, original_vcf)
                     
         return None
-    
-    
-    def run_filtervcf(self):
-        
-        '''Runs filtervcf.py'''
-        
-        logger.info('>>>VCF Filtering>>>')
-
-        os.chdir(self.vcf_dir)
-        os.mkdir('filtered')
-
-        for f in self.vcf_list:
-            
-            logger.info('Filtering %s' % f)
-            
-            vcf_out = os.path.join(self.vcf_dir, 'filtered', f)
-            
-            cmd = [
-                'python', FILTERVCF,
-                '--in', f,
-                '--out', vcf_out,
-                '--hotspots', self.hotspots_file,
-                '--exclusions', self.exclusions_file
-            ]
-            
-            call_subprocess(cmd)
-
-        return None
         
     
     def run_alamut(self):
@@ -762,7 +741,7 @@ class Pipeline(object):
         
         logger.info('>>>Alamut Batch>>>')
 
-        os.chdir(os.path.join(self.vcf_dir, 'filtered'))
+        os.chdir(self.vcf_dir)
         
         ann_dir = os.path.join(self.alamut_dir, 'ann')
         os.mkdir(ann_dir)
@@ -801,11 +780,11 @@ class Pipeline(object):
         
         '''Generate results'''
         
-        logging.info('>>>Results>>>')
+        logging.info('>>>Generating results files>>>')
 
         for f in self.vcf_list:
 
-            logger.info('Generating results for sample %s' % f.replace('.vcf', ''))
+            logger.info('\nGenerating results for sample %s' % f.replace('.vcf', ''))
 
             ann_file = f.replace('.vcf', '.ann')
             ann_path = os.path.join(self.alamut_dir, 'ann', ann_file)
@@ -818,7 +797,8 @@ class Pipeline(object):
                 '--vcf', f,
                 '--ann', ann_path,
                 '--out', out_path,
-                '--hotspots', self.hotspots_file
+                '--hotspots', self.hotspots_file,
+                '--exclusions', self.exclusions_file
             ]
                         
             call_subprocess(cmd)
@@ -826,6 +806,117 @@ class Pipeline(object):
         return None
     
     
+    def generate_coverage_files(self):
+        
+        '''
+        Generates the following files for each sample:
+        
+        1) Coverage statement
+        2) Amplicon coverage
+        3) Hotspot coverage
+        '''
+        
+        logging.info('>>>Generating coverage files>>>')
+        
+        l = len(self.pileup_list)
+        
+        for c, f in enumerate(self.pileup_list):
+            
+            logger.info('Generating coverage files for sample %s (%d of %d)' % (f.replace('.pileup', ''), c+1, l))
+            
+            # use the --srsf2 flag if running the myeloid panel
+            if self.panel == 'myeloid':
+            
+                cmd = [
+                    'python', COVERAGEPY,
+                    '--pileup', os.path.join(self.pileup_dir, f),
+                    '--bed', self.manifest_file,
+                    '--hotspots', self.hotspots_file,
+                    '--outdir', self.coverage_dir,
+                    '--srsf2'
+                ]
+            
+            elif self.panel == 'lymphoid_CLL_MZL':
+                
+                cmd = [
+                    'python', COVERAGEPY,
+                    '--pileup', os.path.join(self.pileup_dir, f),
+                    '--bed', self.manifest_file,
+                    '--hotspots', self.hotspots_file,
+                    '--outdir', self.coverage_dir
+                ]
+                        
+            call_subprocess(cmd)
+        
+        ## combine the amplicon files
+        logger.info('>>>Combining coverage files for %s>>>' % self.expt_id)
+        
+        # get list of amplicon coverage files
+        ampcovdir = os.path.join(self.coverage_dir, 'amplicon_coverage')
+        ampcovlist = sorted([f for f in os.listdir(ampcovdir) if '_ampliconCoverage.txt' in f])
+        
+        # grab the last item
+        last = ampcovlist.pop()
+        
+        # grab the sample name
+        sample_id = last.replace('_ampliconCoverage.txt', '')
+        
+        # load it into a df
+        df_amp = pd.read_table(os.path.join(ampcovdir, last))
+        
+        # rename the avgcount column with the sample id
+        df_amp = df_amp.rename(columns={'avgcount': sample_id})
+        
+        # loop over the remaining samples
+        for f in ampcovlist:
+    
+            sample_id = f.replace('_ampliconCoverage.txt', '')
+
+            df_tmp = pd.read_table(os.path.join(ampcovdir, f))
+
+            df_tmp = df_tmp.rename(columns={'avgcount': sample_id})
+
+            df_amp = pd.merge(df_amp, df_tmp, on=['chr', 'start', 'end', 'amplicon'])
+
+        # create a file name
+        amp_outfile = os.path.join(ampcovdir, self.expt_id + '_ampliconCoverage.txt')
+
+        # output df to file
+        df_amp.to_csv(amp_outfile, sep='\t', header=True, index=False)
+        
+        logger.info('Combined amplicon coverage file saved to: %s' % amp_outfile)
+        
+        ## combine the hotspot files
+        hotcovdir = os.path.join(self.coverage_dir, 'hotspot_coverage')
+        hotcovlist = sorted([f for f in os.listdir(hotcovdir) if '_hotspotCoverage.txt' in f])
+        
+        last = hotcovlist.pop()
+        
+        sample_id = last.replace('_hotspotCoverage.txt', '')
+        
+        df_hot = pd.read_table(os.path.join(hotcovdir, last))
+        
+        df_hot = df_hot.rename(columns={'count': sample_id})
+        
+        for f in hotcovlist:
+            
+            sample_id = f.replace('_hotspotCoverage.txt', '')
+
+            df_tmp = pd.read_table(os.path.join(hotcovdir, f))
+
+            df_tmp = df_tmp.rename(columns={'count': sample_id})
+
+            df_hot = pd.merge(df_hot, df_tmp, on=['chr', 'pos', 'gene'])
+
+        hot_outfile = os.path.join(hotcovdir, self.expt_id + '_hotspotCoverage.txt')
+
+        df_hot.to_csv(hot_outfile, sep='\t', header=True, index=False)
+        
+        logger.info('Combined hotspot coverage file saved to: %s' % hot_outfile)
+
+        return None
+
+
 if __name__ == "__main__":
     args = get_args()
     

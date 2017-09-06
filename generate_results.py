@@ -2,6 +2,7 @@ import argparse
 import os
 import sys
 from collections import Counter
+import numpy as np
 import pandas as pd
 
 
@@ -43,30 +44,12 @@ def get_args():
         required = True
     )
     
-    def restricted_float(x):
-        x = float(x)
-        if x < 0.0 or x > 1.0:
-            raise argparse.ArgumentTypeError('VAF must be between 0.0 and 1.0')
-        return x
-    
     parser.add_argument(
-        '--vaf',
-        help = 'Minimum allele frequency',
-        metavar = '<vaf>',
-        dest = 'vaf',
-        type = restricted_float,
-        default = 0.05,
-        required = False
-    )
-    
-    parser.add_argument(
-        '--depth',
-        help = 'Minimum read depth',
-        metavar = '<depth>',
-        dest = 'depth',
-        type = int,
-        default = 500,
-        required = False
+        '--exclusions',
+        help = 'Exclusions file',
+        metavar = '<exclusions>',
+        dest = 'exclusions',
+        required = True
     )
     
     args = parser.parse_args()
@@ -83,10 +66,7 @@ class ResultsGenerator(object):
         self.results_out = args.results_out
         self.results_dir = os.path.dirname(self.results_out)
         self.hotspots_file = args.hotspots
-        
-        # filter values
-        self.vaf_filter = args.vaf
-        self.depth_filter = args.depth
+        self.exclusions_file = args.exclusions
                 
         return None
     
@@ -101,28 +81,38 @@ class ResultsGenerator(object):
         df_ann = self.load_ann()
         
         # concatenate df_vcf and df_ann side by side
-        df = pd.merge(df_vcf, df_ann, how='inner', on='id')
-
+        df_merged = pd.merge(
+            df_vcf, df_ann,
+            how = 'inner',
+            on = ['id', 'chr', 'POS', 'REF', 'ALT']
+        )
+        
         # create a new column named 'keep', assign all values to False
-        df['keep'] = False
+        df_merged['keep'] = False
         
+        # discard variants on the exclusions list
+        df_merged = self.discard_exclusions(df_merged)
+        
+        # retain variants on the hotspots list
+        df_merged = self.retain_hotspots(df_merged)
+
         # run the df through all the functions
-        df = self.cosmic(df)
-        df = self.splice(df)
-        df = self.filter_variants(df)
+        df_merged = self.cosmic(df_merged)
+        df_merged = self.splice(df_merged)
+        df_merged = self.filter_variants(df_merged)      
         
-        if df.empty:
+        if df_merged.empty:
             
             print('\nNo variants remain after filtering')
             
         else:
         
             # tweak the output
-            df = self.tweak(df)
+            df_merged = self.tweak(df_merged)
 
             # save the output
             print('\nSaving results file: %s' % self.results_out)
-            df.to_csv(self.results_out, sep='\t', header=True, index=False)
+            df_merged.to_csv(self.results_out, sep='\t', header=True, index=False)
         
         return None
     
@@ -135,6 +125,7 @@ class ResultsGenerator(object):
             'Input VCF file': self.vcf_in,
             'Input Alamut Batch file': self.ann_in,
             'Hotspots file': self.hotspots_file,
+            'Exclusions file': self.exclusions_file,
         }
 
         # check that input files exist
@@ -157,7 +148,7 @@ class ResultsGenerator(object):
                 sys.exit('File must have a %s suffix: %s' % (ext, file))
         
         return None
-    
+        
     
     def load_vcf(self):
         
@@ -180,9 +171,12 @@ class ResultsGenerator(object):
 
         # apply column names to df_split
         df_split.columns = format_labels
-
-        # convert 'FREQ' from str to float and round to 3 decimal places
-        df_split['FREQ'] = pd.to_numeric(df_split['FREQ']).round(decimals=3)
+        
+        # convert FREQ % values to decimal (e.g. 25% to 0.25)
+        df_split['FREQ'] = df_split['FREQ'].str.replace('%', '') # remove % symbols
+        df_split['FREQ'] = pd.to_numeric(df_split['FREQ']) # convert str to float
+        df_split['FREQ'] = df_split['FREQ'] / 100 # divide by 100
+        df_split['FREQ'] = df_split['FREQ'].round(decimals=3)
 
         # convert 'DP' from str to int
         df_split['DP'] = pd.to_numeric(df_split['DP'])
@@ -199,12 +193,24 @@ class ResultsGenerator(object):
         
         # add sample id column
         df['sample_id'] = sample_id
+        
+        # set the dtype of the POS column to string
+        df['POS'] = df['POS'].astype('str')
 
+        # specify the columns with which to create the ID
+        cols = ['#CHROM', 'POS', 'REF', 'ALT']
+
+        # create an ID for each variant by concatenating chrom, pos, ref and alt
+        df['ID'] = df[cols].apply(lambda x: '_'.join(x), axis=1)
+        
+        # set the dtype of the POS column back to int
+        df['POS'] = df['POS'].astype('int')
+        
         # rename columns
-        df.rename(columns={'ID': 'id', '#CHROM': 'chr'}, inplace=True)
+        df.rename(columns={'#CHROM': 'chr', 'ID': 'id'}, inplace=True)
 
         # keep only desired columns
-        df = df[['sample_id', 'chr', 'POS', 'id', 'REF', 'ALT', 'DP', 'FREQ']]
+        df = df[['sample_id', 'id', 'chr', 'POS', 'REF', 'ALT', 'DP', 'FREQ']]
 
         return df
     
@@ -216,7 +222,10 @@ class ResultsGenerator(object):
         print('\nLoading Alamut Batch data')
 
         cols = [
-            '#id',
+            'chrom',
+            'inputPos',
+            'inputRef',
+            'inputAlt',
             'gene',
             'varType',
             'codingEffect',
@@ -230,17 +239,19 @@ class ResultsGenerator(object):
             'distNearestSS',
             'nearestSSChange',
             '1000g_AF',
-            'exacAltFreq_all',
-            'exacFilter'
+            'exacAltFreq_all'
         ]
 
         # load the alamut data into a df
         df = pd.read_table(self.ann_in, sep='\t', usecols=cols)
 
-        # rename the '#id' column as 'id'
+        # rename columns
         df.rename(
             columns={
-                '#id': 'id',
+                'chrom': 'chr',
+                'inputPos': 'POS',
+                'inputRef': 'REF',
+                'inputAlt': 'ALT',
                 'codingEffect': 'consequence'
             },
             inplace=True
@@ -255,9 +266,77 @@ class ResultsGenerator(object):
             },
             inplace=True
         )
+        
+        # convert chr values from e.g. 1 --> chr1
+        df['chr'] = df['chr'].astype(str)
+        df['chr'] = 'chr' + df['chr']
+        
+        # set the dtype of the POS column to string
+        df['POS'] = df['POS'].astype('str')
+
+        # specify the columns with which to create the ID
+        cols = ['chr', 'POS', 'REF', 'ALT']
+
+        # create an ID for each variant by concatenating chrom, pos, ref and alt
+        df['id'] = df[cols].apply(lambda x: '_'.join(x), axis=1)
+        
+        # set the dtype of the POS column back to int
+        df['POS'] = df['POS'].astype('int')
 
         return df
     
+    
+    def discard_exclusions(self, df_merged):
+        
+        '''Removes variants that are in the exclusions file'''
+        
+        cols = ['chr', 'POS', 'REF', 'ALT']
+        
+        df_exc = pd.read_table(self.exclusions_file, sep='\t', usecols=cols)
+        
+        df = pd.merge(
+            df_merged, df_exc,
+            on = ['chr', 'POS', 'REF', 'ALT'],
+            how = 'left',
+            indicator = 'excluded'
+        )
+        
+        df['excluded'] = np.where(df['excluded'] == 'both', True, False)
+        
+        df = df.loc[df['excluded'] == False]
+        
+        df.drop('excluded', axis=1, inplace=True)
+        
+        return df
+    
+    
+    def retain_hotspots(self, df_merged):
+        
+        '''Retains the variants that are in the hotspots file'''
+        
+        cols = ['chr', 'POS', 'REF', 'ALT']
+        
+        df_hot = pd.read_table(self.hotspots_file, sep='\t', usecols=cols)
+        
+        df = pd.merge(
+            df_merged, df_hot,
+            on = ['chr', 'POS', 'REF', 'ALT'],
+            how = 'left',
+            indicator = 'hotspot'
+        )
+        
+        df['hotspot'] = np.where(df['hotspot'] == 'both', True, False)
+        
+        df.loc[
+            (df['hotspot'] == True) &
+            (df['FREQ'] >= 0.02),
+            'keep'
+        ] = True
+        
+        df.drop('hotspot', axis=1, inplace=True)
+        
+        return df
+        
     
     def cosmic(self, df_whole):
         
@@ -352,9 +431,9 @@ class ResultsGenerator(object):
         # sort first by id and second by sample number
         df.sort_values(
             ['id', 'cosmicSampleNumber'],
-            ascending=[True, False],
-            axis=0,
-            inplace=True
+            ascending = [True, False],
+            axis = 0,
+            inplace = True
         )
 
         # re-count the variants in df to look for duplicates
@@ -415,10 +494,10 @@ class ResultsGenerator(object):
 
         # change the 'keep' flag to True for variants with a cosmic id
         df_whole.loc[
-            (
-                (pd.notnull(df_whole['cosmic_id'])) &
-                (df_whole['cosmic_haem'] != '0')
-            ),
+            (pd.notnull(df_whole['cosmic_id'])) &
+            (df_whole['cosmic_haem'] != '0') &
+            (df_whole['FREQ'] >= 0.05) &
+            (df_whole['DP'] >= 200),
             'keep'
         ] = True
 
@@ -477,14 +556,6 @@ class ResultsGenerator(object):
         # drop synonymous variants
         df = df.loc[df['consequence'] != 'synonymous']
 
-        # load hotspots file
-        with open(self.hotspots_file, 'r') as f:
-            hotspots = f.read().splitlines()
-            hotspots = [int(i) for i in hotspots]
-
-        # keep hotspot variants
-        df.loc[df['POS'].isin(hotspots), 'keep'] = True
-
         # keep deleterious variants with 5-10% VAF and >500 reads
         consequences = [
             'frameshift',
@@ -498,8 +569,8 @@ class ResultsGenerator(object):
 
             df.loc[
                 (df['consequence'].str.contains(c)) &
-                (df['FREQ'] >= self.vaf_filter) &
-                (df['DP'] >= self.depth_filter),
+                (df['FREQ'] >= 0.05) &
+                (df['DP'] >= 200),
                 'keep'
             ] = True
 
@@ -534,8 +605,7 @@ class ResultsGenerator(object):
 
         # discard variants with ExAC_AF > 0.01
         df.loc[
-            (df['exacAltFreq_all'] > 0.01) &
-            (df['exacFilter'] == 'PASS'),
+            (df['exacAltFreq_all'] > 0.01),
             'keep'
         ] = False
 
@@ -563,7 +633,7 @@ class ResultsGenerator(object):
         # specify the columns with which to create the ID
         cols = ['gene', 'chr', 'POS', 'REF']
 
-        # create an ID for each variant by concatenating gene, chrom, pos and ref
+        # create an ID for each variant by concatenating gene, chr, pos and ref
         df['variant'] = df[cols].apply(lambda x: '_'.join(x), axis=1)
         
         # add '/ALT' to the end
