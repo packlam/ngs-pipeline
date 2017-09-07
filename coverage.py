@@ -1,6 +1,7 @@
 import argparse
 import os
 import pandas as pd
+import sys
 
 
 def get_args():
@@ -330,6 +331,9 @@ class CoverageGenerator(object):
         
         # ensure that any negative values are changed to zero
         df_all.loc[df_all['avgcount'] < 0, 'avgcount'] = 0
+        
+        # drop any duplicate rows
+        df_all.drop_duplicates(subset=['amplicon'], inplace=True)
         
         # set the output file name
         outfile = os.path.join(
